@@ -167,7 +167,7 @@ FAT_File far* FAT_OpenEntry(DISK* disk, FAT_DirectoryEntry* entry) {
 	// out of handles
 	if (handle < 0) {
 		printf("FAT: out of file handles\r\n");
-		return false;
+		return NULL;
 	}
 
 	// setup vars
@@ -183,7 +183,7 @@ FAT_File far* FAT_OpenEntry(DISK* disk, FAT_DirectoryEntry* entry) {
 	int rv = DISK_ReadSectors(disk, FAT_ClusterToLba(fd->CurrentCluster), 1, fd->Buffer);
 	if (!rv) {
 		printf("FAT: read error\r\n");
-		return false;
+		return NULL;
 	}
 
 	fd->Opened = true;
@@ -251,12 +251,12 @@ FAT_File far* FAT_Open(DISK* disk, const char* path) {
 		const char* delim = strchr(path, '/');
 		if (delim != NULL) {
 			memcpy(name, path, delim - path);
-			name[delim - path + 1] = '\0';
+			name[delim - path] = '\0';
 			path = delim + 1;
 		} else {
 			unsigned len = strlen(path);
 			memcpy(name, path, len);
-			name[len + 1] = '\0';
+			name[len] = '\0';
 			path += len;
 			isLast = true;
 		}
@@ -268,7 +268,7 @@ FAT_File far* FAT_Open(DISK* disk, const char* path) {
 			FAT_Close(current);
 
 			// check if directory
-			if (!isLast && entry.Attributes & FAT_ATTRIBUTE_DIRECTORY == 0) {
+			if (!isLast && (entry.Attributes & FAT_ATTRIBUTE_DIRECTORY == 0)) {
 				printf("FAT: %s not a directory\r\n", name);
 				return NULL;
 			}
