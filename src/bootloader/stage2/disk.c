@@ -1,46 +1,22 @@
 #include "disk.h"
 #include "x86.h"
+#include "stdio.h"
 
-// initializes DISK structure (gets drive params from the BIOS)
 bool DISK_Initialize(DISK* disk, uint8_t driveNumber) {
 	uint8_t driveType;
 	uint16_t cylinders, sectors, heads;
 
-	int rv = x86_Disk_GetDriveParams(driveNumber, &driveType, &cylinders,
-										&heads, &sectors);
-
-	if (!rv)
+	if (!x86_Disk_GetDriveParams(disk->id, &driveType, &cylinders, &sectors, &heads))
 		return false;
-	
+
 	disk->id = driveNumber;
 	disk->cylinders = cylinders;
-	disk->sectors = sectors;
 	disk->heads = heads;
-	
+	disk->sectors = sectors;
+
 	return true;
 }
 
-// reads sectorsToRead sectors and puts the data in the dataOut buffer
-// converts the lba to chs itself
-bool DISK_ReadSectors(DISK* disk, uint32_t lba, uint8_t sectorsToRead, uint8_t far* dataOut) {
-	uint16_t cylinders, sectorsFromLba, heads;
-	DISK_LBA2CHS(disk, lba, &cylinders, &sectorsFromLba, &heads);
-
-	// try to read from the disk
-	for (int i = 0; i < 3; i++) {
-		bool rv = x86_Disk_Read(disk->id, cylinders, heads, sectorsFromLba, sectorsToRead, dataOut);
-		if (rv)
-			return true;
-
-		rv = x86_Disk_Reset(disk->id);
-		if (!rv)
-			return false;
-	}
-
-	return false;
-}
-
-// helper function for converting lba to chs
 void DISK_LBA2CHS(DISK* disk, uint32_t lba, uint16_t* cylinderOut, uint16_t* sectorOut, uint16_t* headOut) {
 	// sector = (LBA % sectors per track + 1)
 	*sectorOut = lba % disk->sectors + 1;
@@ -50,4 +26,20 @@ void DISK_LBA2CHS(DISK* disk, uint32_t lba, uint16_t* cylinderOut, uint16_t* sec
 
 	// head = (LBA / sectors per track) % heads
 	*headOut = (lba / disk->sectors) % disk->heads;
+}
+
+bool DISK_ReadSectors(DISK* disk, uint32_t lba, uint8_t sectors, void* dataOut) {
+	uint16_t cylinder, sector, head;
+
+	DISK_LBA2CHS(disk, lba, &cylinder, &sector, &head);
+
+	for (int i = 0; i < 3; i++)
+	{
+		if (x86_Disk_Read(disk->id, cylinder, sector, head, sectors, dataOut))
+			return true;
+
+		x86_Disk_Reset(disk->id);
+	}
+
+	return false;
 }
