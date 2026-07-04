@@ -377,9 +377,8 @@ msg_stage2_not_found:   db 'STAGE2.BIN file not found!', ENDL, 0
 file_stage2_bin:        db 'STAGE2  BIN'
 stage2_cluster:         dw 0
 
-KERNEL_LOAD_SEGMENT     equ 0x2000
-KERNEL_LOAD_OFFSET      equ 0
-
+KERNEL_LOAD_SEGMENT     equ 0x0000
+KERNEL_LOAD_OFFSET      equ 0x500
 
 ; the bios will expect the last 2 bits of the first section (512 bits) of memory to be 5
 ; it just looks for this signature so that it knows it is bootable
