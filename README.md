@@ -3,18 +3,20 @@
 A two-stage x86 bootloader written in x86 assembly and C, targeting a 1.44MB floppy image.
 Built as a learning project to understand the PC boot process from the ground up.
 
+![Hello Kernel](./hello_kernel.png)
+
 ## What it does
 
 **Stage 1** fits inside the 512-byte MBR boot sector.  It reads drive geometry dynamically
 from the BIOS, loads stage 2 from disk using
 BIOS INT 13h with a 3-attempt retry loop, and jumps to it.
 
-**Stage 2** runs in 16-bit real mode with full BIOS access and does the heavy lifting:
-- Traverses the FAT12 filesystem to find and load `kernel.bin`
+**Stage 2** start in 16-bit real mode with full BIOS access and does the work to switch to 32 bit:
 - Enables the A20 line via the 8042 keyboard controller
 - Sets up a flat-model GDT (null, 32-bit code, 32-bit data, 16-bit code, 16-bit data descriptors)
 - Switches the CPU from 16-bit real mode to 32-bit protected mode
 - Far jumps into 32-bit code, reloads segment registers, zeroes BSS, and calls into C
+Finally, stage 2 traverses the FAT12 filesystem to find and load `kernel.bin`, booting into the kernel itself
 
 Stage 2 also implements real mode ↔ protected mode switching to allow BIOS calls from 32-bit
 C code — disk reads and drive parameter queries go through this transition.
@@ -22,8 +24,7 @@ C code — disk reads and drive parameter queries go through this transition.
 ## Build
 
 Requires an `i686-elf` cross-compiler (binutils + GCC). Build it following the
-[OSDev GCC Cross-Compiler guide](https://wiki.osdev.org/GCC_Cross-Compiler), or use a
-pre-built toolchain from [xPack](https://xpack.github.io/).
+[OSDev GCC Cross-Compiler guide](https://wiki.osdev.org/GCC_Cross-Compiler)
 
 ```bash
 make
@@ -32,7 +33,7 @@ make
 Output is a `floppy.img` that can be run directly in QEMU:
 
 ```bash
-qemu-system-i386 -fda floppy.img
+qemu-system-i386 -fda build/main_floppy.img
 ```
 
 Or in Bochs using the provided `bochs_config`.
@@ -68,5 +69,5 @@ Big thanks to nanobyte and the os dev community!
 
 This project is complete as a standalone bootloader. I initially wanted to build an entire hobby OS
 from the ground up, Bootloader included, but this project has shown me has intricate a bootloader can get.
-Thus, the next project will be a separate kernel booted via GRUB, focused on memory management, paging
+Thus, the next project will be a separate kernel booted via Limine, focused on memory management, paging
 and scheduling.
