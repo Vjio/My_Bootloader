@@ -1,4 +1,5 @@
 #include "string.h"
+#include <stddef.h>
 
 // returns first appearance or null
 const char* strchr(const char* str, char chr) {
