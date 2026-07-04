@@ -16,6 +16,7 @@ BIOS INT 13h with a 3-attempt retry loop, and jumps to it.
 - Sets up a flat-model GDT (null, 32-bit code, 32-bit data, 16-bit code, 16-bit data descriptors)
 - Switches the CPU from 16-bit real mode to 32-bit protected mode
 - Far jumps into 32-bit code, reloads segment registers, zeroes BSS, and calls into C
+
 Finally, stage 2 traverses the FAT12 filesystem to find and load `kernel.bin`, booting into the kernel itself
 
 Stage 2 also implements real mode ↔ protected mode switching to allow BIOS calls from 32-bit
