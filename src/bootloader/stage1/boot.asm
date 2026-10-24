@@ -2,20 +2,22 @@
 org 0x7C00
 bits 16
 
-; just a shortcut for \n. thank you internet
+; shortcut for \n
 %define ENDL 0x0D, 0x0A
 
-; 
-; FAT12 header. taken directly from the FAT documentation
-; this is necessary because i will overwrite the FAT image with my bootloader
+; FAT12 (File Allocation Table) header. taken directly from the FAT documentation
+; This must be a valid FAT12 header because the disk image is formatted
+; as FAT12 and this boot sector replaces the one mkfs.fat generated.
+; The code below also reads these fields (sectors per fat, heads, etc.)
+; to locate the root directory and stage 2.
 jmp short start
 nop
-	
+
 bdb_oem:                    db 'MSWIN4.1'           ; 8 bytes
 bdb_bytes_per_sector:       dw 512
 bdb_sectors_per_cluster:    db 1
 bdb_reserved_sectors:       dw 1
-bdb_fat_count:              db 2
+bdb_fat_count:              db 2					; 2 for redundancy
 bdb_dir_entries_count:      dw 0E0h
 bdb_total_sectors:          dw 2880                 ; 2880 * 512 = 1.44MB
 bdb_media_descriptor_type:  db 0F0h                 ; F0 = 3.5" floppy disk
@@ -30,13 +32,13 @@ ebr_drive_number:           db 0                    ; 0x00 floppy, 0x80 hdd, use
 							db 0                    ; reserved
 ebr_signature:              db 29h
 ebr_volume_id:              db 12h, 34h, 56h, 78h   ; serial number, value doesn't matter
-ebr_volume_label:           db 'NANOBYTE OS'        ; 11 bytes, padded with spaces
+ebr_volume_label:           db 'VJI BOOT   '        ; 11 bytes, padded with spaces
 ebr_system_id:              db 'FAT12   '           ; 8 bytes
 
 
 ; code starts here
 start:
-	; setup data segmentes
+	; setup segments registers
 	mov ax, 0
 	; can't write to ds, es dirrectly
 	mov ds, ax
@@ -48,10 +50,13 @@ start:
 
 	; some BIOSes might start us at 07C0:0000 instead of 0000:7C00, make sure we are in the
 	; expected location
-	push es
+	push ax
 	push word .after
+	; retf pops both ip and the code segment
 	retf
 
+	; this function reads the drives geometry
+	; and the searches for the stage 2 binary on the disk
 .after:
 
 	; BIOS should set DL to drive number
@@ -66,18 +71,18 @@ start:
 	push es
 	mov ah, 08h
 	int 13h
+	; BIOS int uses CF for ret value
 	jc floppy_error
 	pop es
 
-	; ch's 8 bits contain information about the cylinder count
-	; cl's first 2 bits also contain the same number
-	; only the last 2 bits have the sector count
-	; which is why whe do cl and 0011 1111
-	and cl, 0x3F                        ; remove top 2 bits
+	; ch holds the upper part of the cylinder count
+	; cl upper 2 bits hold the lower part of the cylinder count
+	; cl lower 6 bits hold the sector count
+	and cl, 0x3F                        ; AND 0011 1111
 	xor ch, ch
 	mov [bdb_sectors_per_track], cx     ; sector count
 
-	; dh = maxIndex. +1 to make it total number of heads
+	; dh = maxIndex, index starts from 0. +1 to find total number of heads
 	inc dh
 	mov [bdb_heads], dh                 ; head count
 
@@ -90,10 +95,11 @@ start:
 	add ax, [bdb_reserved_sectors]      ; ax = LBA of root directory
 	push ax
 
-	; compute size of root directory = (32 * number_of_entries) / bytes_per_sector
+	; compute size of root directory in sectors = (entry_size * number_of_entries) / bytes_per_sector
+	; 32 - FAT_entry_size
 	mov ax, [bdb_dir_entries_count]
-	shl ax, 5                           ; ax *= 32
-	xor dx, dx                          ; dx = 0
+	shl ax, 5                           ; ax *= entry_size
+	xor dx, dx
 	div word [bdb_bytes_per_sector]     ; number of sectors we need to read
 
 	test dx, dx                         ; if dx != 0, add 1
@@ -108,30 +114,31 @@ start:
 	mov bx, buffer                      ; es:bx = buffer
 	call disk_read
 
-	; search for kernel.bin
-	xor bx, bx							; counter
+	; search for 2nd stage binary
+	xor bx, bx							; entry counter
 	mov di, buffer
 
-.search_kernel:
-	mov si, file_stage2_bin
+.search_stage_2:
+	mov si, file_stage_2_bin
 	mov cx, 11                          ; compare up to 11 characters
 	push di
+	cld									; set DF to 0
 	repe cmpsb
 	pop di
-	je .found_kernel
+	je .found_stage_2
 
-	add di, 32							; 32 = size of a directory entry
+	add di, FAT_entry_size				; keep walking the buffer
 	inc bx
 	cmp bx, [bdb_dir_entries_count]
-	jl .search_kernel
+	jl .search_stage_2
 
-	; kernel not found
-	jmp kernel_not_found_error
+	; stage 2 not found
+	jmp stage_2_not_found_error
 
-.found_kernel:
-	; di should have the address to the entry
+.found_stage_2:
+	; di holds the address of the FAT entry of the 2nd stage binary
 	mov ax, [di + 26]                   ; first logical cluster field (offset 26)
-	mov [stage2_cluster], ax
+	mov [stage_2_cluster], ax
 
 	; load FAT from disk into memory
 	mov ax, [bdb_reserved_sectors]
@@ -140,18 +147,18 @@ start:
 	mov dl, [ebr_drive_number]
 	call disk_read
 
-	; read kernel and process FAT chain
-	mov bx, KERNEL_LOAD_SEGMENT
+	; read 2nd stage and process FAT chain
+	mov bx, STAGE_2_LOAD_SEGMENT
 	mov es, bx
-	mov bx, KERNEL_LOAD_OFFSET
+	mov bx, STAGE_2_LOAD_OFFSET
 
-.load_stage2_loop:
+.load_stage_2_loop:
 	; Read next cluster
-	mov ax, [stage2_cluster]
+	mov ax, [stage_2_cluster]
 	
 	; not nice :( hardcoded value
-	add ax, 31                          ; first cluster = (stage2_cluster - 2) * sectors_per_cluster + start_sector
-										; start sector = reserved + fats + root directory size = 1 + 18 + 134 = 33
+	add ax, 31                          ; first cluster = (stage_2_cluster - 2) * sectors_per_cluster + start_sector
+										; start sector = reserved + fats + root directory size = 1 + 18 + 14 = 33
 	mov cl, 1
 	mov dl, [ebr_drive_number]
 	call disk_read
@@ -159,7 +166,7 @@ start:
 	add bx, [bdb_bytes_per_sector]
 
 	; compute location of next cluster
-	mov ax, [stage2_cluster]
+	mov ax, [stage_2_cluster]
 	mov cx, 3
 	mul cx
 	mov cx, 2
@@ -183,34 +190,30 @@ start:
 	cmp ax, 0x0FF8                      ; end of chain
 	jae .read_finish
 
-	mov [stage2_cluster], ax
-	jmp .load_stage2_loop
+	mov [stage_2_cluster], ax
+	jmp .load_stage_2_loop
 
 .read_finish:
-	; jump to our kernel
-	mov dl, [ebr_drive_number]          ; boot device in dl
+	; jump to to the 2nd stage
+	mov dl, [ebr_drive_number] 			; boot device in dl
 
-	mov ax, KERNEL_LOAD_SEGMENT         ; set segment registers
+	mov ax, STAGE_2_LOAD_SEGMENT        ; set segment registers
 	mov ds, ax
 	mov es, ax
 
-	jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
-
-	jmp wait_key_and_reboot             ; should never happen
-
-	cli							; disable interrupts, this way CPU can't get out of "halt" state
-	hlt
+	jmp STAGE_2_LOAD_SEGMENT:STAGE_2_LOAD_OFFSET
 
 
 ; Prints a string to the screen
 ; Params:
 ;   ds:si points to string
 puts:
-	; push registers that i will modify
+	; push all registers that will be modified
 	push si
 	push ax
 	push bx
 
+	cld			; set DF to 0
 .loop:
 	; loads [si] into al. increments si
 	lodsb
@@ -219,7 +222,7 @@ puts:
 
 	; BIOS INT 10h, interuption for writting
 	mov ah, 0x0e
-	mov bh, 0
+	mov bh, 0	; page number (the video card has 7 buffers called pages)
 	int 0x10
 
 	jmp .loop
@@ -238,19 +241,16 @@ floppy_error:
 	call puts
 	jmp wait_key_and_reboot
 
-kernel_not_found_error:
-    mov si, msg_stage2_not_found
+stage_2_not_found_error:
+    mov si, msg_stage_2_not_found
     call puts
     jmp wait_key_and_reboot
 
 wait_key_and_reboot:
 	mov ah, 0
 	int 16h                     ; wait for keypress
-	jmp 0FFFFh:0                ; jump to beginning of BIOS, should reboot
+	jmp 0FFFFh:0                ; jump to beginning of BIOS to reboot
 
-.halt:
-	cli							; disable interrupts, this way CPU can't get out of "halt" state
-	hlt
 
 ;
 ; Disk routines
@@ -314,7 +314,7 @@ lba_to_chs:
 	; - ah: status
 	; - al: number of sectors read
 	; - cf: 0 (succes) or 1 (fail)
-; read int 13 documentation if confused
+; read int 13 documentation for more information
 disk_read:
 	push ax                             ; save registers we will modify
 	push bx
@@ -330,7 +330,7 @@ disk_read:
 	mov di, 3							; retry count
 
 .retry:
-	pusha								; just to be safe. dunno what registers the int will overwrite
+	pusha								; for safety. unsure what registers the interrupt will modify
 	stc									; set carry flag
 	int 13h								; carry flag cleared = succes
 	jnc .done							; jump if carry not set
@@ -373,15 +373,18 @@ disk_reset:
 
 msg_loading:			db 'Loading...', ENDL, 0
 msg_read_failed:        db 'Read from disk failed!', ENDL, 0
-msg_stage2_not_found:   db 'STAGE2.BIN file not found!', ENDL, 0
-file_stage2_bin:        db 'STAGE2  BIN'
-stage2_cluster:         dw 0
+msg_stage_2_not_found:   db 'stage_2.BIN file not found!', ENDL, 0
+file_stage_2_bin:        db 'STAGE2  BIN'	; this must be exactly 11 characters and uppercase
+stage_2_cluster:         dw 0
 
-KERNEL_LOAD_SEGMENT     equ 0x0000
-KERNEL_LOAD_OFFSET      equ 0x500
+; DEFINES
 
-; the bios will expect the last 2 bits of the first section (512 bits) of memory to be 5
-; it just looks for this signature so that it knows it is bootable
+FAT_entry_size:			 equ 32
+STAGE_2_LOAD_SEGMENT     equ 0x0000
+STAGE_2_LOAD_OFFSET      equ 0x500
+
+; the bios will expect the last 2 bytes of the first section (512 bits) of memory to be 5
+; it looks for this signature so that it knows it is bootable
 times 510-($-$$) db 0
 dw 0AA55h
 
